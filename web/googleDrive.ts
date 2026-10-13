@@ -17,6 +17,7 @@ const CLIENT_ID_KEY = 'bionic-reader:drive-client-id';
 const SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
 const CLIENT_SRC = 'https://accounts.google.com/gsi/client';
 const TOKEN_KEY = 'bionic-reader:drive-token';
+const CONNECTED_KEY = 'bionic-reader:drive-connected';
 const DRIVE_API = 'https://www.googleapis.com/drive/v3/files';
 const DRIVE_UPLOAD = 'https://www.googleapis.com/upload/drive/v3/files';
 // Tokens are refused a little before they expire so a sync cannot die midway.
@@ -146,7 +147,7 @@ export function isDriveConfigured() {
 
 function readStoredToken(): StoredToken | null {
   try {
-    const raw = window.sessionStorage.getItem(TOKEN_KEY);
+    const raw = window.localStorage.getItem(TOKEN_KEY);
     if (!raw) {
       return null;
     }
@@ -159,7 +160,7 @@ function readStoredToken(): StoredToken | null {
 
 function storeToken(value: string, lifetimeSeconds: number) {
   try {
-    window.sessionStorage.setItem(
+    window.localStorage.setItem(
       TOKEN_KEY,
       JSON.stringify({
         value,
@@ -173,7 +174,7 @@ function storeToken(value: string, lifetimeSeconds: number) {
 
 function clearStoredToken() {
   try {
-    window.sessionStorage.removeItem(TOKEN_KEY);
+    window.localStorage.removeItem(TOKEN_KEY);
   } catch {
     // Nothing to clear.
   }
@@ -182,6 +183,30 @@ function clearStoredToken() {
 /** True when a sync can run without asking the user for anything. */
 export function isDriveConnected() {
   return Boolean(readStoredToken());
+}
+
+/**
+ * Whether this browser has been signed in before. Tokens last about an hour,
+ * so this is what lets a later visit try to resume without a click.
+ */
+export function wasDriveConnected() {
+  try {
+    return window.localStorage.getItem(CONNECTED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function rememberConnection(connected: boolean) {
+  try {
+    if (connected) {
+      window.localStorage.setItem(CONNECTED_KEY, 'true');
+    } else {
+      window.localStorage.removeItem(CONNECTED_KEY);
+    }
+  } catch {
+    // The reader just asks again next time.
+  }
 }
 
 function loadClient() {
@@ -229,7 +254,12 @@ function loadClient() {
  * Ask Google for an access token. Must be called from a user gesture: the
  * browser flow has no silent renewal.
  */
-export async function connectDrive() {
+/**
+ * `silent` asks Google for a token without showing anything. It only succeeds
+ * when the account is still signed in and has granted access before, so the
+ * caller must be ready for it to fail.
+ */
+export async function connectDrive({ silent = false } = {}) {
   const clientId = getDriveClientId();
   if (!clientId) {
     throw new Error('Google Drive has not been set up yet.');
@@ -250,7 +280,7 @@ export async function connectDrive() {
       client_id: clientId,
       scope: SCOPE,
       // Consent is asked for once; later sign-ins reuse the existing grant.
-      prompt: '',
+      prompt: silent ? 'none' : '',
       callback: response => {
         if (!response.access_token) {
           reject(
@@ -264,6 +294,7 @@ export async function connectDrive() {
           return;
         }
         storeToken(response.access_token, Number(response.expires_in) || 3600);
+        rememberConnection(true);
         resolve();
       },
       error_callback: error => {
@@ -284,6 +315,7 @@ export async function connectDrive() {
 export async function disconnectDrive() {
   const token = readStoredToken();
   clearStoredToken();
+  rememberConnection(false);
   fileIds.clear();
   if (!token) {
     return;

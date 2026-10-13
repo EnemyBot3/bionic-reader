@@ -30,8 +30,9 @@ export type StoredBook = {
 };
 
 const DATABASE_NAME = 'bionic-reader-library';
-const DATABASE_VERSION = 2;
+const DATABASE_VERSION = 3;
 const BOOK_STORE = 'books';
+const COVER_STORE = 'covers';
 
 export function getBookKey(file: File) {
   // The same book copied to a second device keeps its name and size but gets a
@@ -215,6 +216,10 @@ function openDatabase(): Promise<IDBDatabase> {
 
     request.onupgradeneeded = () => {
       const database = request.result;
+      // Covers for books the account holds but this device has not downloaded.
+      if (!database.objectStoreNames.contains(COVER_STORE)) {
+        database.createObjectStore(COVER_STORE, { keyPath: 'id' });
+      }
       if (!database.objectStoreNames.contains(BOOK_STORE)) {
         database.createObjectStore(BOOK_STORE, { keyPath: 'id' });
         return;
@@ -338,6 +343,50 @@ export async function loadBook(bookKey: string): Promise<StoredBook | null> {
       request.onerror = () =>
         reject(request.error ?? new Error('Could not read the book.'));
     });
+  } finally {
+    database.close();
+  }
+}
+
+export async function saveCover(bookKey: string, cover: Blob) {
+  if (!('indexedDB' in window)) {
+    return;
+  }
+
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(COVER_STORE, 'readwrite');
+      transaction.objectStore(COVER_STORE).put({ id: bookKey, cover });
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () =>
+        reject(transaction.error ?? new Error('Could not save the cover.'));
+    });
+  } finally {
+    database.close();
+  }
+}
+
+export async function listCovers(): Promise<Map<string, Blob>> {
+  if (!('indexedDB' in window)) {
+    return new Map();
+  }
+
+  const database = await openDatabase();
+  try {
+    const records = await new Promise<Array<{ id: string; cover: Blob }>>(
+      (resolve, reject) => {
+        const transaction = database.transaction(COVER_STORE, 'readonly');
+        const request = transaction.objectStore(COVER_STORE).getAll();
+        request.onsuccess = () =>
+          resolve((request.result as Array<{ id: string; cover: Blob }>) ?? []);
+        request.onerror = () =>
+          reject(request.error ?? new Error('Could not read covers.'));
+      },
+    );
+    return new Map(
+      records.filter(record => record.cover).map(r => [r.id, r.cover]),
+    );
   } finally {
     database.close();
   }

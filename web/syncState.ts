@@ -25,6 +25,7 @@ import {
   getEntryUpdatedAt,
   getStoredEntry,
   listStoredBookKeys,
+  saveCover,
   saveDownloadedBook,
   storedBookToFile,
   type SavedBookmark,
@@ -54,6 +55,9 @@ export type LibraryEntry = {
   size: number;
   lastModified: number;
   slices: string[];
+  /** The cover, so other devices can show the book before downloading it. */
+  coverSlices?: string[];
+  coverType?: string;
   updatedAt: number;
 };
 
@@ -245,6 +249,9 @@ export async function syncWithDrive(
       continue;
     }
     const slices = await writeDriveBlob(book.fileName, book.blob);
+    const cover = book.cover
+      ? await writeDriveBlob(`${book.fileName}.cover`, book.cover)
+      : null;
     library[book.id] = {
       title: book.title,
       creator: book.creator,
@@ -253,6 +260,9 @@ export async function syncWithDrive(
       size: book.blob.size,
       lastModified: book.lastModified,
       slices,
+      ...(cover
+        ? { coverSlices: cover, coverType: book.cover?.type || 'image/jpeg' }
+        : {}),
       updatedAt: Date.now(),
     };
     uploaded.push(book.id);
@@ -268,6 +278,33 @@ export async function syncWithDrive(
   }
 
   return { ...applied, uploaded, library, pushed };
+}
+
+/**
+ * Pull the covers of books the account holds but this device has not opened,
+ * so the shelf is complete everywhere rather than only where a book was read.
+ */
+export async function fetchMissingCovers(
+  library: Record<string, LibraryEntry>,
+  known: Set<string>,
+) {
+  const fetched: string[] = [];
+  for (const [bookKey, entry] of Object.entries(library)) {
+    if (known.has(bookKey) || !entry.coverSlices?.length) {
+      continue;
+    }
+    try {
+      const cover = await readDriveBlob(
+        entry.coverSlices,
+        entry.coverType || 'image/jpeg',
+      );
+      await saveCover(bookKey, cover);
+      fetched.push(bookKey);
+    } catch {
+      // A missing cover is cosmetic; the book still opens.
+    }
+  }
+  return fetched;
 }
 
 /** Pull a book the account has but this device does not. */

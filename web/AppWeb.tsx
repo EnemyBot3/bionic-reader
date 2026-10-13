@@ -75,10 +75,12 @@ import {
   isDriveConfigured,
   isDriveConnected,
   setDriveClientId,
+  wasDriveConnected,
 } from './googleDrive';
 import {
   DriveAuthError,
   downloadBook,
+  fetchMissingCovers,
   syncWithDrive,
   type LibraryEntry,
 } from './syncState';
@@ -87,6 +89,7 @@ import {
   getBookKey,
   getSavedPosition,
   listBooks,
+  listCovers,
   loadBook,
   saveBook,
   saveBookmarks,
@@ -131,6 +134,7 @@ export function AppWeb() {
   const [book, setBook] = useState<BookDetails | null>(null);
   const [books, setBooks] = useState<StoredBook[]>([]);
   const [library, setLibrary] = useState<Record<string, LibraryEntry>>({});
+  const [covers, setCovers] = useState<Map<string, Blob>>(new Map());
   const [openingKey, setOpeningKey] = useState<string | null>(null);
   const [location, setLocation] = useState<ReadingLocation>(EMPTY_LOCATION);
   const [loading, setLoading] = useState(false);
@@ -173,7 +177,7 @@ export function AppWeb() {
       title: book.title,
       creator: book.creator,
       local: true,
-      cover: book.cover ?? null,
+      cover: book.cover ?? covers.get(book.id) ?? null,
     }));
     for (const [key, entry] of Object.entries(library)) {
       if (!rows.some(row => row.key === key)) {
@@ -182,12 +186,12 @@ export function AppWeb() {
           title: entry.title,
           creator: entry.creator,
           local: false,
-          cover: null,
+          cover: covers.get(key) ?? null,
         });
       }
     }
     return rows;
-  }, [books, library]);
+  }, [books, covers, library]);
   const bookKey = useMemo(() => (file ? getBookKey(file) : ''), [file]);
   const initialCfi = useMemo(
     () => (bookKey ? getSavedPosition(bookKey)?.cfi : undefined),
@@ -209,10 +213,19 @@ export function AppWeb() {
     setDriveStatus('busy');
 
     try {
-      const result = await syncWithDrive(await listBooks());
+      const localBooks = await listBooks();
+      const result = await syncWithDrive(localBooks);
       setLibrary(result.library);
       if (result.uploaded.length > 0) {
         setBooks(await listBooks());
+      }
+
+      const known = new Set([
+        ...localBooks.filter(book => book.cover).map(book => book.id),
+        ...(await listCovers()).keys(),
+      ]);
+      if (await fetchMissingCovers(result.library, known)) {
+        setCovers(await listCovers());
       }
       if (result.settingsChanged) {
         setSettings(loadReaderSettings());
@@ -238,8 +251,20 @@ export function AppWeb() {
   }, []);
 
   useEffect(() => {
-    if (driveConfigured && isDriveConnected()) {
+    if (!driveConfigured) {
+      return;
+    }
+    if (isDriveConnected()) {
       void runSync();
+      return;
+    }
+    // The token has expired since the last visit. Google may hand us a new one
+    // without showing anything, as long as the account is still signed in.
+    if (wasDriveConnected()) {
+      setDriveStatus('busy');
+      void connectDrive({ silent: true })
+        .then(() => runSync())
+        .catch(() => setDriveStatus('off'));
     }
   }, [driveConfigured, runSync]);
 
@@ -316,6 +341,9 @@ export function AppWeb() {
     void listBooks()
       .then(setBooks)
       .catch(() => setBooks([]));
+    void listCovers()
+      .then(setCovers)
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -504,6 +532,7 @@ export function AppWeb() {
       }
       openFile(await downloadBook(row.key, entry));
       setBooks(await listBooks());
+      setCovers(await listCovers());
     } catch (error) {
       if (error instanceof DriveAuthError) {
         setDriveStatus('off');
