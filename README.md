@@ -1,97 +1,61 @@
-This is a new [**React Native**](https://reactnative.dev) project, bootstrapped using [`@react-native-community/cli`](https://github.com/react-native-community/cli).
+# Bionic Reader
 
-# Getting Started
+A browser-only EPUB reader built with React, Vite, and EPUB.js. Books are opened and rendered locally in the browser.
 
-> **Note**: Make sure you have completed the [Set Up Your Environment](https://reactnative.dev/docs/set-up-your-environment) guide before proceeding.
-
-## Step 1: Start Metro
-
-First, you will need to run **Metro**, the JavaScript build tool for React Native.
-
-To start the Metro dev server, run the following command from the root of your React Native project:
+## Run locally
 
 ```sh
-# Using npm
-npm start
-
-# OR using Yarn
-yarn start
+npm install
+npm run dev
 ```
 
-## Step 2: Build and run your app
+The development server prints the local URL. Chrome is the supported browser.
 
-With Metro running, open a new terminal window/pane from the root of your React Native project, and use one of the following commands to build and run your Android or iOS app:
-
-### Android
+## Verify a build
 
 ```sh
-# Using npm
-npm run android
-
-# OR using Yarn
-yarn android
+npm run typecheck
+npm run build
 ```
 
-### iOS
+## Sync across devices (optional)
 
-For iOS, remember to install CocoaPods dependencies (this only needs to be run on first clone or after updating native deps).
+Books, reading position, bookmarks, and settings can follow you between devices
+through your own Google Drive. There is no server and no database: the app
+writes into Drive's hidden per-app folder, which only this app can read.
 
-The first time you create a new project, run the Ruby bundler to install CocoaPods itself:
+Every book you open is uploaded once, in 4 MB slices, and any device signed
+into the same account lists it and can pull it down on demand. Books stay
+cached locally after that, so a book is only fetched once per device.
 
-```sh
-bundle install
-```
+The cloud icon in the header walks through the one-time setup. It links
+straight to each Google Cloud page involved, says what to enter there, shows
+the exact origin to authorise, and takes the client ID at the end. A failed
+sign-in reopens it with the reason and the step that fixes it.
 
-Then, and every time you update your native dependencies, run:
+The client ID is not a secret and is not tied to a device: set it up once and
+paste the same ID on every other device, or put it in `.env.local` so a build
+carries it. Steps 1 to 3 are only ever done once per Google account.
 
-```sh
-bundle exec pod install
-```
+Shift-clicking the icon disconnects when connected, and reopens the setup when
+not. A failed sign-in reopens it too, with the reason shown.
 
-For more information, please visit [CocoaPods Getting Started guide](https://guides.cocoapods.org/using/getting-started.html).
+Google issues no refresh token to browser apps, so a session lasts about an
+hour, after which the next click signs back in.
 
-```sh
-# Using npm
-npm run ios
+Baking the client ID into a build instead is still possible: copy
+`.env.example` to `.env.local` and set `VITE_GOOGLE_CLIENT_ID`.
 
-# OR using Yarn
-yarn ios
-```
+## Reader features
 
-If everything is set up correctly, you should see your new app running in the Android Emulator, iOS Simulator, or your connected device.
+- Continuous vertical EPUB reading
+- Publisher structure, headings, alignment, images, links, and embedded fonts
+- Adjustable bionic fixation, frequency, weight, and contrast
+- Original bold emphasis represented with underlines
+- Font, sizing, spacing, width, alignment, ligature, hyphenation, and theme controls
+- Table of contents, full-book search, bookmarks, progress seeking, and fullscreen
+- Reading settings, last position, and the most recent local EPUB persisted in browser storage
+- Optional Google Drive sync of the library, reading position, bookmarks, and settings
+- Fixed-layout detection and clear errors for invalid or protected EPUBs
 
-This is one way to run your app — you can also build it directly from Android Studio or Xcode.
-
-## Step 3: Modify your app
-
-Now that you have successfully run the app, let's make changes!
-
-Open `App.tsx` in your text editor of choice and make some changes. When you save, your app will automatically update and reflect these changes — this is powered by [Fast Refresh](https://reactnative.dev/docs/fast-refresh).
-
-When you want to forcefully reload, for example to reset the state of your app, you can perform a full reload:
-
-- **Android**: Press the <kbd>R</kbd> key twice or select **"Reload"** from the **Dev Menu**, accessed via <kbd>Ctrl</kbd> + <kbd>M</kbd> (Windows/Linux) or <kbd>Cmd ⌘</kbd> + <kbd>M</kbd> (macOS).
-- **iOS**: Press <kbd>R</kbd> in iOS Simulator.
-
-## Congratulations! :tada:
-
-You've successfully run and modified your React Native App. :partying_face:
-
-### Now what?
-
-- If you want to add this new React Native code to an existing application, check out the [Integration guide](https://reactnative.dev/docs/integration-with-existing-apps).
-- If you're curious to learn more about React Native, check out the [docs](https://reactnative.dev/docs/getting-started).
-
-# Troubleshooting
-
-If you're having issues getting the above steps to work, see the [Troubleshooting](https://reactnative.dev/docs/troubleshooting) page.
-
-# Learn More
-
-To learn more about React Native, take a look at the following resources:
-
-- [React Native Website](https://reactnative.dev) - learn more about React Native.
-- [Getting Started](https://reactnative.dev/docs/environment-setup) - an **overview** of React Native and how setup your environment.
-- [Learn the Basics](https://reactnative.dev/docs/getting-started) - a **guided tour** of the React Native **basics**.
-- [Blog](https://reactnative.dev/blog) - read the latest official React Native **Blog** posts.
-- [`@facebook/react-native`](https://github.com/facebook/react-native) - the Open Source; GitHub **repository** for React Native.
+Legacy native project directories remain in the repository for history, but they are not referenced by the web package or its scripts.
