@@ -19,6 +19,8 @@ export type StoredBook = {
   /** The book key, so a book can be found again from its file or the manifest. */
   id: string;
   blob: Blob;
+  /** The publisher's cover, lifted out the first time the book was opened. */
+  cover?: Blob | null;
   fileName: string;
   fileType: string;
   lastModified: number;
@@ -243,7 +245,12 @@ function openDatabase(): Promise<IDBDatabase> {
   });
 }
 
-export async function saveBook(file: File, title: string, creator: string) {
+export async function saveBook(
+  file: File,
+  title: string,
+  creator: string,
+  cover?: Blob | null,
+) {
   if (!('indexedDB' in window)) {
     return;
   }
@@ -255,6 +262,7 @@ export async function saveBook(file: File, title: string, creator: string) {
       transaction.objectStore(BOOK_STORE).put({
         id: getBookKey(file),
         blob: file,
+        cover: cover ?? null,
         fileName: file.name,
         fileType: file.type || 'application/epub+zip',
         lastModified: file.lastModified,

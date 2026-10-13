@@ -105,6 +105,7 @@ type LibraryRow = {
   title: string;
   creator: string;
   local: boolean;
+  cover: Blob | null;
 };
 type ContentsTab = 'toc' | 'bookmarks';
 
@@ -172,6 +173,7 @@ export function AppWeb() {
       title: book.title,
       creator: book.creator,
       local: true,
+      cover: book.cover ?? null,
     }));
     for (const [key, entry] of Object.entries(library)) {
       if (!rows.some(row => row.key === key)) {
@@ -180,6 +182,7 @@ export function AppWeb() {
           title: entry.title,
           creator: entry.creator,
           local: false,
+          cover: null,
         });
       }
     }
@@ -257,9 +260,11 @@ export function AppWeb() {
         error instanceof Error ? error.message : 'Sign-in did not finish.';
       setDriveStatus('error');
       setDriveMessage(message);
-      // Sign-in nearly always fails because of the credentials themselves, so
-      // put the setup back in front of the user with the reason attached.
-      setSetupOpen(true);
+      // The setup is done and lives in the build; a failure here is reported
+      // on the control itself rather than by reopening a wizard.
+      if (!file) {
+        setError(message);
+      }
       return;
     }
     await runSync();
@@ -468,7 +473,16 @@ export function AppWeb() {
     if (!file) {
       return;
     }
-    void saveBook(file, details.title, details.creator)
+    // EPUB.js hands us a blob URL for the cover that dies with the book, so
+    // take a copy now for the shelf.
+    void (
+      details.coverUrl
+        ? fetch(details.coverUrl)
+            .then(response => response.blob())
+            .catch(() => null)
+        : Promise.resolve(null)
+    )
+      .then(cover => saveBook(file, details.title, details.creator, cover))
       .then(() => listBooks())
       .then(setBooks)
       .catch(() => undefined);
@@ -1058,6 +1072,22 @@ function LibraryView({
   onDismissError: () => void;
 }) {
   const nextTheme = theme === 'dark' ? 'paper' : 'dark';
+  // Covers are blobs on this device; hand them to the <img> as object URLs and
+  // take them back when the shelf changes.
+  const covers = useMemo(() => {
+    const urls = new Map<string, string>();
+    for (const row of rows) {
+      if (row.cover) {
+        urls.set(row.key, URL.createObjectURL(row.cover));
+      }
+    }
+    return urls;
+  }, [rows]);
+
+  useEffect(
+    () => () => covers.forEach(url => URL.revokeObjectURL(url)),
+    [covers],
+  );
 
   return (
     <div className="library-view">
@@ -1067,6 +1097,9 @@ function LibraryView({
           <strong>Bionic Reader</strong>
         </div>
         <div className="library-actions">
+          <IconButton label="Open an EPUB" onClick={onOpen}>
+            <FolderOpen size={18} />
+          </IconButton>
           <DriveButton
             status={driveStatus}
             message={driveMessage}
@@ -1082,49 +1115,6 @@ function LibraryView({
       </header>
 
       <main className="library-main">
-        <section className="open-book-panel" aria-labelledby="open-heading">
-          <div className="library-mark">
-            <Library size={28} />
-          </div>
-          <h1 id="open-heading">Open an EPUB</h1>
-          <button className="primary-command" type="button" onClick={onOpen}>
-            <FolderOpen size={18} />
-            <span>Choose book</span>
-          </button>
-        </section>
-
-        {rows.length > 0 ? (
-          <section className="recent-section" aria-labelledby="recent-heading">
-            <div className="section-heading">
-              <span id="recent-heading">Books</span>
-            </div>
-            {rows.map(row => (
-              <button
-                key={row.key}
-                className="recent-book"
-                type="button"
-                disabled={openingKey !== null}
-                onClick={() => onOpenBook(row)}
-              >
-                <div className="recent-cover">
-                  <BookOpen size={23} />
-                </div>
-                <div>
-                  <strong>{row.title}</strong>
-                  <span>{row.creator}</span>
-                </div>
-                {openingKey === row.key ? (
-                  <LoaderCircle className="spin" size={18} />
-                ) : row.local ? (
-                  <ChevronRight size={18} />
-                ) : (
-                  <CloudDownload size={18} />
-                )}
-              </button>
-            ))}
-          </section>
-        ) : null}
-
         {error ? (
           <div className="library-error" role="alert">
             <span>{error}</span>
@@ -1133,6 +1123,50 @@ function LibraryView({
             </IconButton>
           </div>
         ) : null}
+
+        {rows.length > 0 ? (
+          <section className="shelf" aria-label="Books">
+            {rows.map(row => (
+              <button
+                key={row.key}
+                className="shelf-book"
+                type="button"
+                disabled={openingKey !== null}
+                onClick={() => onOpenBook(row)}
+              >
+                <span className="shelf-cover">
+                  {covers.has(row.key) ? (
+                    <img src={covers.get(row.key)} alt="" />
+                  ) : (
+                    <BookOpen size={26} />
+                  )}
+                  {openingKey === row.key ? (
+                    <span className="shelf-badge">
+                      <LoaderCircle className="spin" size={15} />
+                    </span>
+                  ) : row.local ? null : (
+                    <span className="shelf-badge" title="In your Drive">
+                      <CloudDownload size={15} />
+                    </span>
+                  )}
+                </span>
+                <strong>{row.title}</strong>
+                <span>{row.creator}</span>
+              </button>
+            ))}
+          </section>
+        ) : (
+          <section className="open-book-panel" aria-labelledby="open-heading">
+            <div className="library-mark">
+              <Library size={28} />
+            </div>
+            <h1 id="open-heading">Open an EPUB</h1>
+            <button className="primary-command" type="button" onClick={onOpen}>
+              <FolderOpen size={18} />
+              <span>Choose book</span>
+            </button>
+          </section>
+        )}
       </main>
     </div>
   );
