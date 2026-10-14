@@ -411,6 +411,19 @@ input:focus-visible {
   margin: 28px 0 0;
 }
 
+.import-progress {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 22px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--muted);
+  background: var(--page);
+  font-size: 13px;
+}
+
 .library-error {
   display: flex;
   align-items: center;
@@ -639,8 +652,17 @@ input:focus-visible {
   border-radius: 6px;
   color: var(--muted);
   background: var(--surface);
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   white-space: nowrap;
+}
+
+.format-notice .icon-button {
+  width: 24px;
+  height: 24px;
+  margin-right: -5px;
 }
 
 .reader-footer {

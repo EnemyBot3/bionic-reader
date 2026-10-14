@@ -46,6 +46,19 @@ hour, after which the next click signs back in.
 Baking the client ID into a build instead is still possible: copy
 `.env.example` to `.env.local` and set `VITE_GOOGLE_CLIENT_ID`.
 
+## PDFs
+
+EPUB is the format this reader is built for. PDFs are accepted on a best
+effort basis: a PDF describes where glyphs sit on a page and says nothing
+about paragraphs or reading order, so importing one extracts its text, infers
+the structure, and builds an EPUB from the result. From then on it is an
+ordinary book — it reflows, syncs, and takes bookmarks.
+
+That works well for single-column prose. Columns are detected and read one
+after the other, but the reader says so, because the order can still be wrong.
+A scanned PDF holds no text at all and is refused rather than imported empty.
+Images, tables and footnotes are dropped.
+
 ## Reader features
 
 - Continuous vertical EPUB reading
@@ -56,6 +69,7 @@ Baking the client ID into a build instead is still possible: copy
 - Table of contents, full-book search, bookmarks, progress seeking, and fullscreen
 - Reading settings, last position, and the most recent local EPUB persisted in browser storage
 - Optional Google Drive sync of the library, reading position, bookmarks, and settings
+- Best-effort PDF import, converted to EPUB on the way in
 - Fixed-layout detection and clear errors for invalid or protected EPUBs
 
 Legacy native project directories remain in the repository for history, but they are not referenced by the web package or its scripts.

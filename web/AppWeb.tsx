@@ -144,6 +144,12 @@ export function AppWeb() {
   const [openingKey, setOpeningKey] = useState<string | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [openAtCfi, setOpenAtCfi] = useState<string | null>(null);
+  const [importNotice, setImportNotice] = useState<string | null>(null);
+  const [importing, setImporting] = useState<{
+    name: string;
+    done: number;
+    total: number;
+  } | null>(null);
   const [location, setLocation] = useState<ReadingLocation>(EMPTY_LOCATION);
   const [loading, setLoading] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -461,17 +467,21 @@ export function AppWeb() {
     setLocalEdits(count => count + 1);
   }
 
-  function openFile(nextFile: File | null) {
+  function openFile(nextFile: File | null, notice?: string | null) {
     if (!nextFile) {
       return;
     }
-    if (
-      !nextFile.name.toLowerCase().endsWith('.epub') &&
-      nextFile.type !== 'application/epub+zip'
-    ) {
-      setError(
-        'Choose an EPUB file. PDF files are no longer converted in this reader.',
-      );
+    if (notice !== undefined) {
+      setImportNotice(notice);
+    }
+
+    const name = nextFile.name.toLowerCase();
+    if (name.endsWith('.pdf') || nextFile.type === 'application/pdf') {
+      void importPdfFile(nextFile);
+      return;
+    }
+    if (!name.endsWith('.epub') && nextFile.type !== 'application/epub+zip') {
+      setError('Choose an EPUB or a PDF.');
       return;
     }
 
@@ -532,6 +542,41 @@ export function AppWeb() {
       .catch(() => undefined);
   }
 
+  /**
+   * PDFs are converted once, on import, and stored as the EPUB they became.
+   * Everything downstream then treats them as an ordinary book.
+   */
+  async function importPdfFile(source: File) {
+    setError(null);
+    setImporting({ name: source.name, done: 0, total: 0 });
+    try {
+      const { importPdf } = await import('./pdfImport');
+      const result = await importPdf(source, (done, total) =>
+        setImporting({ name: source.name, done, total }),
+      );
+
+      await saveBook(result.file, result.title, result.creator, result.cover);
+      setBooks(await listBooks());
+      setLocalEdits(count => count + 1);
+      setImporting(null);
+
+      // A warning is not a failure: the book still opens, with a note.
+      setImportNotice(
+        result.warnings.includes('columns')
+          ? 'Converted from a PDF laid out in columns, so the text may run out of order.'
+          : result.warnings.includes('sparse')
+          ? 'Converted from a PDF that holds very little text.'
+          : 'Converted from a PDF, so the layout is approximate.',
+      );
+      openFile(result.file);
+    } catch (error) {
+      setImporting(null);
+      setError(
+        error instanceof Error ? error.message : 'That PDF could not be read.',
+      );
+    }
+  }
+
   async function saveBookEdit(
     bookKey: string,
     patch: { title?: string; creator?: string; cover?: Blob },
@@ -570,7 +615,7 @@ export function AppWeb() {
     try {
       const stored = row.local ? await loadBook(row.key) : null;
       if (stored) {
-        openFile(storedBookToFile(stored));
+        openFile(storedBookToFile(stored), null);
         return;
       }
 
@@ -702,7 +747,7 @@ export function AppWeb() {
         ref={fileInputRef}
         className="visually-hidden"
         type="file"
-        accept="application/epub+zip,.epub"
+        accept="application/epub+zip,.epub,application/pdf,.pdf"
         onChange={handleFileInput}
       />
 
@@ -717,6 +762,8 @@ export function AppWeb() {
           driveStatus={driveStatus}
           driveMessage={driveMessage}
           onDrive={event => void handleDrive(event)}
+          importNotice={importNotice}
+          onDismissNotice={() => setImportNotice(null)}
           settings={settings}
           drawer={drawer}
           contentsTab={contentsTab}
@@ -754,6 +801,7 @@ export function AppWeb() {
         <LibraryView
           rows={libraryRows}
           openingKey={openingKey}
+          importing={importing}
           onEditBook={row => setEditingKey(row.key)}
           error={error}
           theme={settings.theme}
@@ -818,6 +866,8 @@ type ReaderChromeProps = {
   driveStatus: DriveStatus;
   driveMessage: string;
   onDrive: (event: React.MouseEvent<HTMLButtonElement>) => void;
+  importNotice: string | null;
+  onDismissNotice: () => void;
   settings: ReaderSettings;
   drawer: DrawerName;
   contentsTab: ContentsTab;
@@ -1029,6 +1079,13 @@ function ReaderChrome(props: ReaderChromeProps) {
           <div className="format-notice">
             Fixed-layout EPUB: typography and bionic controls are limited.
           </div>
+        ) : props.importNotice ? (
+          <div className="format-notice">
+            <span>{props.importNotice}</span>
+            <IconButton label="Dismiss" onClick={props.onDismissNotice}>
+              <X size={15} />
+            </IconButton>
+          </div>
         ) : null}
       </main>
 
@@ -1148,6 +1205,7 @@ function ReaderChrome(props: ReaderChromeProps) {
 function LibraryView({
   rows,
   openingKey,
+  importing,
   onEditBook,
   error,
   theme,
@@ -1161,6 +1219,7 @@ function LibraryView({
 }: {
   rows: LibraryRow[];
   openingKey: string | null;
+  importing: { name: string; done: number; total: number } | null;
   onEditBook: (row: LibraryRow) => void;
   error: string | null;
   theme: ReaderTheme;
@@ -1218,6 +1277,17 @@ function LibraryView({
       </header>
 
       <main className="library-main">
+        {importing ? (
+          <div className="import-progress" role="status">
+            <LoaderCircle className="spin" size={16} />
+            <span>
+              {importing.total
+                ? `Reading ${importing.name} · page ${importing.done} of ${importing.total}`
+                : `Reading ${importing.name}`}
+            </span>
+          </div>
+        ) : null}
+
         {error ? (
           <div className="library-error" role="alert">
             <span>{error}</span>
