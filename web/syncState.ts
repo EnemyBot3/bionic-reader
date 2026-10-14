@@ -251,9 +251,11 @@ export async function syncWithDrive(
   const uploaded: string[] = [];
   const removed: string[] = [];
 
-  // A book deleted anywhere is deleted everywhere.
+  // A book deleted anywhere is deleted everywhere, but only the copies that
+  // predate the deletion: adding the same book again is not undone by it.
   for (const [bookKey, entry] of Object.entries(library)) {
-    if (entry.deletedAt && localBooks.some(book => book.id === bookKey)) {
+    const local = localBooks.find(book => book.id === bookKey);
+    if (entry.deletedAt && local && local.updatedAt < entry.deletedAt) {
       await deleteBook(bookKey);
       removed.push(bookKey);
     }
@@ -261,6 +263,12 @@ export async function syncWithDrive(
 
   for (const book of localBooks) {
     const existing = library[book.id];
+    // A book added back after a deletion is uploaded afresh, which clears the
+    // tombstone for every device.
+    const buried =
+      Boolean(existing?.deletedAt) &&
+      book.updatedAt <= (existing?.deletedAt ?? 0);
+
     if (existing && !existing.deletedAt) {
       // A hand edit here is newer than what the account holds.
       if ((book.editedAt ?? 0) > existing.updatedAt) {
@@ -285,7 +293,7 @@ export async function syncWithDrive(
       }
       continue;
     }
-    if (existing?.deletedAt || !book.blob || book.blob.size > MAX_BOOK_SIZE) {
+    if (buried || !book.blob || book.blob.size > MAX_BOOK_SIZE) {
       continue;
     }
     const slices = await writeDriveBlob(book.fileName, book.blob);
