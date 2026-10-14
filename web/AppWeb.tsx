@@ -1193,25 +1193,27 @@ function LibraryView({
   return (
     <div className="library-view">
       <header className="library-toolbar">
-        <div className="brand">
-          <BookOpen size={19} />
-          <strong>Bionic Reader</strong>
-        </div>
-        <div className="library-actions">
-          <IconButton label="Open an EPUB" onClick={onOpen}>
-            <FolderOpen size={18} />
-          </IconButton>
-          <DriveButton
-            status={driveStatus}
-            message={driveMessage}
-            onActivate={onDrive}
-          />
-          <IconButton
-            label={`Use ${nextTheme} theme`}
-            onClick={() => onThemeChange(nextTheme)}
-          >
-            {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
-          </IconButton>
+        <div className="library-bar">
+          <div className="brand">
+            <BookOpen size={19} />
+            <strong>Bionic Reader</strong>
+          </div>
+          <div className="library-actions">
+            <IconButton label="Open an EPUB" onClick={onOpen}>
+              <FolderOpen size={18} />
+            </IconButton>
+            <DriveButton
+              status={driveStatus}
+              message={driveMessage}
+              onActivate={onDrive}
+            />
+            <IconButton
+              label={`Use ${nextTheme} theme`}
+              onClick={() => onThemeChange(nextTheme)}
+            >
+              {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
+            </IconButton>
+          </div>
         </div>
       </header>
 
