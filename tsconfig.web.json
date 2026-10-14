@@ -17,5 +17,5 @@
     "jsx": "react-jsx",
     "types": ["vite/client"]
   },
-  "include": ["web", "vite.config.ts"]
+  "include": ["web", "vite.config.ts", "vitest.config.ts"]
 }

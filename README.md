@@ -15,8 +15,14 @@ The development server prints the local URL. Chrome is the supported browser.
 
 ```sh
 npm run typecheck
+npm test
 npm run build
 ```
+
+The tests cover the logic that has broken before: snapshot merging and the
+deletion tombstones, the PDF structure heuristics, the EPUB writer, and the
+book keys that have to match across devices. They run on every push, and a
+failure stops the deployment.
 
 ## Sync across devices (optional)
 

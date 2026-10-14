@@ -100,7 +100,7 @@ function toLines(items: Item[]) {
  * a left column and a right column share baselines, so merging first would
  * splice the two together and lose the gutter along with the reading order.
  */
-function pageLines(items: Item[], pageWidth: number) {
+export function pageLines(items: Item[], pageWidth: number) {
   const real = items.filter(item => item.str.trim());
   if (real.length < 20) {
     return { lines: toLines(real), columns: 1 };
@@ -141,7 +141,7 @@ function pageLines(items: Item[], pageWidth: number) {
 }
 
 /** Drop the running header and footer a book repeats on every page. */
-function stripRunningTitles(pages: Line[][]) {
+export function stripRunningTitles(pages: Line[][]) {
   const seen = new Map<string, number>();
   const edges = (lines: Line[]) =>
     [lines[0], lines[lines.length - 1]].filter(Boolean);
@@ -176,7 +176,7 @@ function stripRunningTitles(pages: Line[][]) {
 }
 
 /** Turn ordered lines into paragraphs and headings. */
-function toBlocks(pages: Line[][]) {
+export function toBlocks(pages: Line[][]) {
   const all = pages.flat();
   if (all.length === 0) {
     return [];
@@ -363,7 +363,7 @@ function buildEpub(
  * "about:blank", "Microsoft Word - draft3.doc", an untouched template. Fall
  * back to the file name when the metadata is obviously not a title.
  */
-function cleanTitle(raw: string | undefined, fileName: string) {
+export function cleanTitle(raw: string | undefined, fileName: string) {
   const fromFile = fileName
     .replace(/\.pdf$/i, '')
     .replace(/_+/g, ' ')
