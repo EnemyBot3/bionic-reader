@@ -27,6 +27,7 @@ import {
   CloudAlert,
   CloudCheck,
   CloudDownload,
+  CloudOff,
   Copy,
   Ellipsis,
   ImagePlus,
@@ -93,10 +94,12 @@ import {
   getBookmarks as readBookmarks,
   getSavedPosition,
   deleteBook,
+  keepStoredDataPersistent,
   listBooks,
   listCovers,
   loadBook,
   saveBook,
+  removeLocalCopy,
   saveBookmarks,
   updateBook,
   savePosition,
@@ -106,7 +109,7 @@ import {
 } from './storage';
 
 type DrawerName = 'contents' | 'search' | 'settings' | null;
-type DriveStatus = 'off' | 'busy' | 'ready' | 'error';
+type DriveStatus = 'off' | 'busy' | 'ready' | 'error' | 'offline';
 
 /** A book on this device, in the account, or both. */
 type LibraryRow = {
@@ -142,6 +145,7 @@ export function AppWeb() {
   const [library, setLibrary] = useState<Record<string, LibraryEntry>>({});
   const [covers, setCovers] = useState<Map<string, Blob>>(new Map());
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const [pinningKey, setPinningKey] = useState<string | null>(null);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [openAtCfi, setOpenAtCfi] = useState<string | null>(null);
   const [importNotice, setImportNotice] = useState<string | null>(null);
@@ -230,6 +234,11 @@ export function AppWeb() {
     if (syncingRef.current) {
       return;
     }
+    if (!navigator.onLine) {
+      // Nothing is lost: edits stay stamped and go up on reconnection.
+      setDriveStatus('offline');
+      return;
+    }
     syncingRef.current = true;
     setDriveStatus('busy');
 
@@ -298,7 +307,32 @@ export function AppWeb() {
     return () => window.clearTimeout(timeout);
   }, [driveConfigured, localEdits, runSync]);
 
+  useEffect(() => {
+    const onReconnect = () => {
+      if (isDriveConnected()) {
+        void runSync();
+      } else {
+        // Whatever the network broke, it is no longer broken.
+        setDriveStatus(current =>
+          current === 'offline' || current === 'error' ? 'off' : current,
+        );
+      }
+    };
+    const onDisconnect = () => setDriveStatus('offline');
+
+    window.addEventListener('online', onReconnect);
+    window.addEventListener('offline', onDisconnect);
+    return () => {
+      window.removeEventListener('online', onReconnect);
+      window.removeEventListener('offline', onDisconnect);
+    };
+  }, [runSync]);
+
   async function connectAndSync() {
+    if (!navigator.onLine) {
+      setDriveStatus('offline');
+      return;
+    }
     setDriveStatus('busy');
     try {
       await connectDrive();
@@ -537,6 +571,7 @@ export function AppWeb() {
         : Promise.resolve(null)
     )
       .then(cover => saveBook(file, details.title, details.creator, cover))
+      .then(() => keepStoredDataPersistent())
       .then(() => listBooks())
       .then(setBooks)
       .catch(() => undefined);
@@ -584,6 +619,43 @@ export function AppWeb() {
     await updateBook(bookKey, patch);
     setBooks(await listBooks());
     setLocalEdits(count => count + 1);
+  }
+
+  /** Fetch a book from the account and keep it, without opening it. */
+  async function saveLocally(bookKey: string) {
+    const entry = library[bookKey];
+    if (!entry) {
+      return;
+    }
+    setPinningKey(bookKey);
+    try {
+      await downloadBook(bookKey, entry);
+      await keepStoredDataPersistent();
+      setBooks(await listBooks());
+      setCovers(await listCovers());
+    } catch (error) {
+      setError(
+        error instanceof DriveAuthError
+          ? 'Sign in to Google Drive to download this book.'
+          : error instanceof Error
+          ? error.message
+          : 'That book could not be downloaded.',
+      );
+    } finally {
+      setPinningKey(null);
+    }
+  }
+
+  /** Free the space a book takes here; the account keeps it. */
+  async function freeLocally(bookKey: string) {
+    setPinningKey(bookKey);
+    try {
+      await removeLocalCopy(bookKey);
+      setBooks(await listBooks());
+      setCovers(await listCovers());
+    } finally {
+      setPinningKey(null);
+    }
   }
 
   async function removeBook(bookKey: string) {
@@ -819,6 +891,10 @@ export function AppWeb() {
         <BookPanel
           row={editingRow}
           bookmarks={readBookmarks(editingRow.key)}
+          inAccount={Boolean(library[editingRow.key])}
+          busy={pinningKey === editingRow.key}
+          onSaveLocally={() => void saveLocally(editingRow.key)}
+          onFreeLocally={() => void freeLocally(editingRow.key)}
           onSave={patch => void saveBookEdit(editingRow.key, patch)}
           onOpenBookmark={cfi => void openLibraryBook(editingRow, cfi)}
           onRemoveBookmark={id => {
@@ -1234,20 +1310,18 @@ function LibraryView({
   const nextTheme = theme === 'dark' ? 'paper' : 'dark';
   // Covers are blobs on this device; hand them to the <img> as object URLs and
   // take them back when the shelf changes.
-  const covers = useMemo(() => {
+  const [covers, setCovers] = useState<Map<string, string>>(new Map());
+
+  useEffect(() => {
     const urls = new Map<string, string>();
     for (const row of rows) {
       if (row.cover) {
         urls.set(row.key, URL.createObjectURL(row.cover));
       }
     }
-    return urls;
+    setCovers(urls);
+    return () => urls.forEach(url => URL.revokeObjectURL(url));
   }, [rows]);
-
-  useEffect(
-    () => () => covers.forEach(url => URL.revokeObjectURL(url)),
-    [covers],
-  );
 
   return (
     <div className="library-view">
@@ -2302,6 +2376,10 @@ const SETUP_STEPS: Array<{ label: string; hint: string; href: string }> = [
 function BookPanel({
   row,
   bookmarks,
+  inAccount,
+  busy,
+  onSaveLocally,
+  onFreeLocally,
   onSave,
   onOpenBookmark,
   onRemoveBookmark,
@@ -2310,6 +2388,10 @@ function BookPanel({
 }: {
   row: LibraryRow;
   bookmarks: SavedBookmark[];
+  inAccount: boolean;
+  busy: boolean;
+  onSaveLocally: () => void;
+  onFreeLocally: () => void;
   onSave: (patch: { title?: string; creator?: string; cover?: Blob }) => void;
   onOpenBookmark: (cfi: string) => void;
   onRemoveBookmark: (id: string) => void;
@@ -2320,19 +2402,19 @@ function BookPanel({
   const [creator, setCreator] = useState(row.creator);
   const [confirming, setConfirming] = useState(false);
   const coverInput = useRef<HTMLInputElement | null>(null);
-  const cover = useMemo(
-    () => (row.cover ? URL.createObjectURL(row.cover) : null),
-    [row.cover],
-  );
+  // The URL is made and released by the same effect, so a remount gets a
+  // fresh one rather than the handle a previous cleanup already revoked.
+  const [cover, setCover] = useState<string | null>(null);
 
-  useEffect(
-    () => () => {
-      if (cover) {
-        URL.revokeObjectURL(cover);
-      }
-    },
-    [cover],
-  );
+  useEffect(() => {
+    if (!row.cover) {
+      setCover(null);
+      return;
+    }
+    const url = URL.createObjectURL(row.cover);
+    setCover(url);
+    return () => URL.revokeObjectURL(url);
+  }, [row.cover]);
 
   function commit() {
     const patch: { title?: string; creator?: string } = {};
@@ -2450,6 +2532,40 @@ function BookPanel({
           )}
 
           <div className="book-actions">
+            {row.local ? (
+              <button
+                className="book-offline"
+                type="button"
+                disabled={busy || !inAccount}
+                title={
+                  inAccount
+                    ? 'Remove the copy on this device'
+                    : 'Sync this book before freeing the space'
+                }
+                onClick={onFreeLocally}
+              >
+                {busy ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <Check size={15} />
+                )}
+                <span>On this device</span>
+              </button>
+            ) : (
+              <button
+                className="book-offline"
+                type="button"
+                disabled={busy}
+                onClick={onSaveLocally}
+              >
+                {busy ? (
+                  <LoaderCircle className="spin" size={15} />
+                ) : (
+                  <CloudDownload size={15} />
+                )}
+                <span>Save on this device</span>
+              </button>
+            )}
             <button
               className="book-delete"
               type="button"
@@ -2608,6 +2724,8 @@ function DriveButton({
   const label =
     status === 'busy'
       ? 'Syncing'
+      : status === 'offline'
+      ? 'Offline · changes sync when you reconnect'
       : status === 'ready'
       ? 'Synced with Google Drive · shift-click to disconnect'
       : status === 'error'
@@ -2618,6 +2736,8 @@ function DriveButton({
     <IconButton label={label} active={status === 'ready'} onClick={onActivate}>
       {status === 'busy' ? (
         <LoaderCircle className="spin" size={18} />
+      ) : status === 'offline' ? (
+        <CloudOff size={18} />
       ) : status === 'ready' ? (
         <CloudCheck size={18} />
       ) : status === 'error' ? (

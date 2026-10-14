@@ -52,6 +52,20 @@ hour, after which the next click signs back in.
 Baking the client ID into a build instead is still possible: copy
 `.env.example` to `.env.local` and set `VITE_GOOGLE_CLIENT_ID`.
 
+## Offline
+
+The reader installs itself. After the first visit a service worker holds the
+whole app, so it opens with no network at all, and the manifest lets it be
+added to a home screen as its own application rather than a browser tab.
+
+Books are stored on the device as they are opened, and the browser is asked to
+keep them rather than evicting them when space runs short. A book that lives
+only in the account shows a download control in its panel; the same control
+frees the space again afterwards, keeping the cover and the account copy.
+
+Syncing waits for a connection rather than failing: the cloud icon says when
+it is offline, and the queued changes go up when the network returns.
+
 ## PDFs
 
 EPUB is the format this reader is built for. PDFs are accepted on a best

@@ -367,6 +367,55 @@ export async function deleteBook(bookKey: string) {
   }
 }
 
+/**
+ * Ask the browser not to evict the library when space runs short. Without it
+ * a phone can quietly drop the books, and iOS clears site data that has not
+ * been opened for a week.
+ */
+export async function keepStoredDataPersistent() {
+  try {
+    if (!navigator.storage?.persist || (await navigator.storage.persisted())) {
+      return;
+    }
+    await navigator.storage.persist();
+  } catch {
+    // Nothing to do if the browser will not say.
+  }
+}
+
+/**
+ * Free the space a book takes without forgetting it: the cover stays so the
+ * shelf still shows it, and the account still holds the book itself.
+ */
+export async function removeLocalCopy(bookKey: string) {
+  const book = await loadBook(bookKey);
+  if (!book) {
+    return;
+  }
+
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(
+        [BOOK_STORE, COVER_STORE],
+        'readwrite',
+      );
+      if (book.cover) {
+        transaction.objectStore(COVER_STORE).put({
+          id: bookKey,
+          cover: book.cover,
+        });
+      }
+      transaction.objectStore(BOOK_STORE).delete(bookKey);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () =>
+        reject(transaction.error ?? new Error('Could not free the book.'));
+    });
+  } finally {
+    database.close();
+  }
+}
+
 export async function listBooks(): Promise<StoredBook[]> {
   if (!('indexedDB' in window)) {
     return [];
