@@ -28,6 +28,8 @@ import {
   CloudCheck,
   CloudDownload,
   Copy,
+  Ellipsis,
+  ImagePlus,
   ExternalLink,
   FilePlus2,
   FileText,
@@ -78,6 +80,7 @@ import {
   wasDriveConnected,
 } from './googleDrive';
 import {
+  deleteBookEverywhere,
   DriveAuthError,
   downloadBook,
   fetchMissingCovers,
@@ -87,12 +90,15 @@ import {
 import {
   getBookmarks,
   getBookKey,
+  getBookmarks as readBookmarks,
   getSavedPosition,
+  deleteBook,
   listBooks,
   listCovers,
   loadBook,
   saveBook,
   saveBookmarks,
+  updateBook,
   savePosition,
   storedBookToFile,
   type SavedBookmark,
@@ -136,6 +142,8 @@ export function AppWeb() {
   const [library, setLibrary] = useState<Record<string, LibraryEntry>>({});
   const [covers, setCovers] = useState<Map<string, Blob>>(new Map());
   const [openingKey, setOpeningKey] = useState<string | null>(null);
+  const [editingKey, setEditingKey] = useState<string | null>(null);
+  const [openAtCfi, setOpenAtCfi] = useState<string | null>(null);
   const [location, setLocation] = useState<ReadingLocation>(EMPTY_LOCATION);
   const [loading, setLoading] = useState(false);
   const [restoring, setRestoring] = useState(false);
@@ -180,6 +188,9 @@ export function AppWeb() {
       cover: book.cover ?? covers.get(book.id) ?? null,
     }));
     for (const [key, entry] of Object.entries(library)) {
+      if (entry.deletedAt) {
+        continue;
+      }
       if (!rows.some(row => row.key === key)) {
         rows.push({
           key,
@@ -192,6 +203,10 @@ export function AppWeb() {
     }
     return rows;
   }, [books, covers, library]);
+
+  const editingRow = editingKey
+    ? libraryRows.find(row => row.key === editingKey) ?? null
+    : null;
   const bookKey = useMemo(() => (file ? getBookKey(file) : ''), [file]);
   const initialCfi = useMemo(
     () => (bookKey ? getSavedPosition(bookKey)?.cfi : undefined),
@@ -216,8 +231,9 @@ export function AppWeb() {
       const localBooks = await listBooks();
       const result = await syncWithDrive(localBooks);
       setLibrary(result.library);
-      if (result.uploaded.length > 0) {
+      if (result.uploaded.length > 0 || result.removed.length > 0) {
         setBooks(await listBooks());
+        setCovers(await listCovers());
       }
 
       const known = new Set([
@@ -516,8 +532,40 @@ export function AppWeb() {
       .catch(() => undefined);
   }
 
+  async function saveBookEdit(
+    bookKey: string,
+    patch: { title?: string; creator?: string; cover?: Blob },
+  ) {
+    await updateBook(bookKey, patch);
+    setBooks(await listBooks());
+    setLocalEdits(count => count + 1);
+  }
+
+  async function removeBook(bookKey: string) {
+    setEditingKey(null);
+    try {
+      if (isDriveConnected() && library[bookKey]) {
+        await deleteBookEverywhere(bookKey, library[bookKey]);
+      } else {
+        await deleteBook(bookKey);
+      }
+    } catch {
+      // Removing it here is what matters; the account catches up next sync.
+      await deleteBook(bookKey);
+    }
+    setBooks(await listBooks());
+    setCovers(await listCovers());
+    setLibrary(current => {
+      const next = { ...current };
+      delete next[bookKey];
+      return next;
+    });
+  }
+
   /** Open a book from this device, fetching it from the account if needed. */
-  async function openLibraryBook(row: LibraryRow) {
+  async function openLibraryBook(row: LibraryRow, cfi?: string) {
+    setOpenAtCfi(cfi ?? null);
+    setEditingKey(null);
     setOpeningKey(row.key);
     try {
       const stored = row.local ? await loadBook(row.key) : null;
@@ -680,7 +728,7 @@ export function AppWeb() {
           fullscreen={fullscreen}
           seekProgress={seekProgress}
           readerRef={readerRef}
-          initialCfi={initialCfi}
+          initialCfi={openAtCfi ?? initialCfi}
           file={file}
           onBookReady={handleBookReady}
           onLocationChange={setLocation}
@@ -706,6 +754,7 @@ export function AppWeb() {
         <LibraryView
           rows={libraryRows}
           openingKey={openingKey}
+          onEditBook={row => setEditingKey(row.key)}
           error={error}
           theme={settings.theme}
           driveStatus={driveStatus}
@@ -717,6 +766,27 @@ export function AppWeb() {
           onDismissError={() => setError(null)}
         />
       )}
+
+      {editingRow ? (
+        <BookPanel
+          row={editingRow}
+          bookmarks={readBookmarks(editingRow.key)}
+          onSave={patch => void saveBookEdit(editingRow.key, patch)}
+          onOpenBookmark={cfi => void openLibraryBook(editingRow, cfi)}
+          onRemoveBookmark={id => {
+            const next = readBookmarks(editingRow.key).filter(
+              mark => mark.id !== id,
+            );
+            saveBookmarks(editingRow.key, next);
+            if (editingRow.key === bookKey) {
+              setBookmarks(next);
+            }
+            setLocalEdits(count => count + 1);
+          }}
+          onDelete={() => void removeBook(editingRow.key)}
+          onClose={() => setEditingKey(null)}
+        />
+      ) : null}
 
       {setupOpen ? (
         <DriveSetup
@@ -1078,6 +1148,7 @@ function ReaderChrome(props: ReaderChromeProps) {
 function LibraryView({
   rows,
   openingKey,
+  onEditBook,
   error,
   theme,
   driveStatus,
@@ -1090,6 +1161,7 @@ function LibraryView({
 }: {
   rows: LibraryRow[];
   openingKey: string | null;
+  onEditBook: (row: LibraryRow) => void;
   error: string | null;
   theme: ReaderTheme;
   driveStatus: DriveStatus;
@@ -1156,32 +1228,42 @@ function LibraryView({
         {rows.length > 0 ? (
           <section className="shelf" aria-label="Books">
             {rows.map(row => (
-              <button
-                key={row.key}
-                className="shelf-book"
-                type="button"
-                disabled={openingKey !== null}
-                onClick={() => onOpenBook(row)}
-              >
-                <span className="shelf-cover">
-                  {covers.has(row.key) ? (
-                    <img src={covers.get(row.key)} alt="" />
-                  ) : (
-                    <BookOpen size={26} />
-                  )}
-                  {openingKey === row.key ? (
-                    <span className="shelf-badge">
-                      <LoaderCircle className="spin" size={15} />
-                    </span>
-                  ) : row.local ? null : (
-                    <span className="shelf-badge" title="In your Drive">
-                      <CloudDownload size={15} />
-                    </span>
-                  )}
-                </span>
-                <strong>{row.title}</strong>
-                <span>{row.creator}</span>
-              </button>
+              <div key={row.key} className="shelf-book">
+                <button
+                  className="shelf-open"
+                  type="button"
+                  disabled={openingKey !== null}
+                  onClick={() => onOpenBook(row)}
+                >
+                  <span className="shelf-cover">
+                    {covers.has(row.key) ? (
+                      <img src={covers.get(row.key)} alt="" />
+                    ) : (
+                      <BookOpen size={26} />
+                    )}
+                    {openingKey === row.key ? (
+                      <span className="shelf-badge">
+                        <LoaderCircle className="spin" size={15} />
+                      </span>
+                    ) : row.local ? null : (
+                      <span className="shelf-badge" title="In your Drive">
+                        <CloudDownload size={15} />
+                      </span>
+                    )}
+                  </span>
+                  <strong>{row.title}</strong>
+                  <span>{row.creator}</span>
+                </button>
+                <button
+                  className="shelf-edit"
+                  type="button"
+                  title="Edit book"
+                  aria-label={`Edit ${row.title}`}
+                  onClick={() => onEditBook(row)}
+                >
+                  <Ellipsis size={15} />
+                </button>
+              </div>
             ))}
           </section>
         ) : (
@@ -2144,6 +2226,174 @@ const SETUP_STEPS: Array<{ label: string; hint: string; href: string }> = [
     href: 'https://console.cloud.google.com/auth/audience',
   },
 ];
+
+function BookPanel({
+  row,
+  bookmarks,
+  onSave,
+  onOpenBookmark,
+  onRemoveBookmark,
+  onDelete,
+  onClose,
+}: {
+  row: LibraryRow;
+  bookmarks: SavedBookmark[];
+  onSave: (patch: { title?: string; creator?: string; cover?: Blob }) => void;
+  onOpenBookmark: (cfi: string) => void;
+  onRemoveBookmark: (id: string) => void;
+  onDelete: () => void;
+  onClose: () => void;
+}) {
+  const [title, setTitle] = useState(row.title);
+  const [creator, setCreator] = useState(row.creator);
+  const [confirming, setConfirming] = useState(false);
+  const coverInput = useRef<HTMLInputElement | null>(null);
+  const cover = useMemo(
+    () => (row.cover ? URL.createObjectURL(row.cover) : null),
+    [row.cover],
+  );
+
+  useEffect(
+    () => () => {
+      if (cover) {
+        URL.revokeObjectURL(cover);
+      }
+    },
+    [cover],
+  );
+
+  function commit() {
+    const patch: { title?: string; creator?: string } = {};
+    if (title.trim() && title !== row.title) {
+      patch.title = title.trim();
+    }
+    if (creator !== row.creator) {
+      patch.creator = creator.trim();
+    }
+    if (patch.title || patch.creator !== undefined) {
+      onSave(patch);
+    }
+  }
+
+  return (
+    <>
+      <button
+        className="setup-scrim"
+        type="button"
+        aria-label="Close"
+        onClick={() => {
+          commit();
+          onClose();
+        }}
+      />
+      <aside className="setup-panel book-panel" aria-label={row.title}>
+        <div className="drawer-header">
+          <h2>Book</h2>
+          <IconButton
+            label="Close"
+            onClick={() => {
+              commit();
+              onClose();
+            }}
+          >
+            <X size={17} />
+          </IconButton>
+        </div>
+
+        <div className="setup-body">
+          <div className="book-head">
+            <button
+              className="book-cover"
+              type="button"
+              title="Replace cover"
+              aria-label="Replace cover"
+              onClick={() => coverInput.current?.click()}
+            >
+              {cover ? <img src={cover} alt="" /> : <BookOpen size={24} />}
+              <span className="book-cover-edit">
+                <ImagePlus size={15} />
+              </span>
+            </button>
+            <input
+              ref={coverInput}
+              className="visually-hidden"
+              type="file"
+              accept="image/*"
+              onChange={event => {
+                const picked = event.currentTarget.files?.[0];
+                if (picked) {
+                  onSave({ cover: picked });
+                }
+                event.currentTarget.value = '';
+              }}
+            />
+            <div className="book-fields">
+              <input
+                aria-label="Title"
+                placeholder="Title"
+                value={title}
+                onChange={event => setTitle(event.currentTarget.value)}
+                onBlur={commit}
+              />
+              <input
+                aria-label="Author"
+                placeholder="Author"
+                value={creator}
+                onChange={event => setCreator(event.currentTarget.value)}
+                onBlur={commit}
+              />
+            </div>
+          </div>
+
+          <div className="section-heading">
+            <span>Bookmarks</span>
+          </div>
+          {bookmarks.length > 0 ? (
+            <ul className="book-marks">
+              {bookmarks
+                .slice()
+                .sort((first, second) => first.progress - second.progress)
+                .map(mark => (
+                  <li key={mark.id}>
+                    <button
+                      className="book-mark"
+                      type="button"
+                      disabled={!row.local}
+                      onClick={() => onOpenBookmark(mark.cfi)}
+                    >
+                      <span>{mark.chapter || 'Saved location'}</span>
+                      <small>{Math.round(mark.progress * 100)}%</small>
+                    </button>
+                    <IconButton
+                      label="Remove bookmark"
+                      onClick={() => onRemoveBookmark(mark.id)}
+                    >
+                      <Trash2 size={15} />
+                    </IconButton>
+                  </li>
+                ))}
+            </ul>
+          ) : (
+            <p className="book-empty">None yet</p>
+          )}
+
+          <div className="book-actions">
+            <button
+              className="book-delete"
+              type="button"
+              data-confirming={confirming}
+              onClick={() => (confirming ? onDelete() : setConfirming(true))}
+              onBlur={() => setConfirming(false)}
+            >
+              <Trash2 size={15} />
+              <span>{confirming ? 'Delete everywhere?' : 'Delete'}</span>
+            </button>
+          </div>
+        </div>
+      </aside>
+    </>
+  );
+}
 
 function DriveSetup({
   origin,

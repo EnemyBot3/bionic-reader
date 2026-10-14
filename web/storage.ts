@@ -27,6 +27,8 @@ export type StoredBook = {
   title: string;
   creator: string;
   updatedAt: number;
+  /** When the reader last edited the title, author or cover by hand. */
+  editedAt?: number;
 };
 
 const DATABASE_NAME = 'bionic-reader-library';
@@ -303,6 +305,65 @@ export async function saveDownloadedBook(book: Omit<StoredBook, 'updatedAt'>) {
     });
   } finally {
     database.close();
+  }
+}
+
+/** Apply a hand edit to a book and mark it for the next sync. */
+export async function updateBook(
+  bookKey: string,
+  patch: Partial<Pick<StoredBook, 'title' | 'creator' | 'cover'>>,
+) {
+  const book = await loadBook(bookKey);
+  if (!book) {
+    return null;
+  }
+
+  const next: StoredBook = { ...book, ...patch, editedAt: Date.now() };
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(BOOK_STORE, 'readwrite');
+      transaction.objectStore(BOOK_STORE).put(next);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () =>
+        reject(transaction.error ?? new Error('Could not save the book.'));
+    });
+  } finally {
+    database.close();
+  }
+  return next;
+}
+
+/** Remove a book and its cover from this device. */
+export async function deleteBook(bookKey: string) {
+  if (!('indexedDB' in window)) {
+    return;
+  }
+
+  const database = await openDatabase();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const transaction = database.transaction(
+        [BOOK_STORE, COVER_STORE],
+        'readwrite',
+      );
+      transaction.objectStore(BOOK_STORE).delete(bookKey);
+      transaction.objectStore(COVER_STORE).delete(bookKey);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () =>
+        reject(transaction.error ?? new Error('Could not remove the book.'));
+    });
+  } finally {
+    database.close();
+  }
+
+  // The reading state goes with it, on every device at the next sync.
+  for (const kind of ['position', 'bookmarks'] as const) {
+    try {
+      window.localStorage.removeItem(`bionic-reader:${kind}:${bookKey}`);
+    } catch {
+      // Nothing to remove.
+    }
   }
 }
 

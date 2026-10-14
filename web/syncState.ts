@@ -7,6 +7,7 @@
  */
 
 import {
+  deleteDriveFiles,
   DriveAuthError,
   readDriveBlob,
   readDriveJson,
@@ -22,6 +23,7 @@ import {
 } from './readerSettings';
 import {
   applyRemoteEntry,
+  deleteBook,
   getEntryUpdatedAt,
   getStoredEntry,
   listStoredBookKeys,
@@ -59,6 +61,8 @@ export type LibraryEntry = {
   coverSlices?: string[];
   coverType?: string;
   updatedAt: number;
+  /** Set when the book was deleted, so other devices drop it too. */
+  deletedAt?: number;
 };
 
 export type SyncSnapshot = {
@@ -226,6 +230,7 @@ export type SyncResult = {
   settingsChanged: boolean;
   books: string[];
   uploaded: string[];
+  removed: string[];
   library: Record<string, LibraryEntry>;
   pushed: boolean;
 };
@@ -244,8 +249,43 @@ export async function syncWithDrive(
   // Anything this device has read but the account has never seen goes up.
   const library = { ...(merged.library ?? {}) };
   const uploaded: string[] = [];
+  const removed: string[] = [];
+
+  // A book deleted anywhere is deleted everywhere.
+  for (const [bookKey, entry] of Object.entries(library)) {
+    if (entry.deletedAt && localBooks.some(book => book.id === bookKey)) {
+      await deleteBook(bookKey);
+      removed.push(bookKey);
+    }
+  }
+
   for (const book of localBooks) {
-    if (library[book.id] || !book.blob || book.blob.size > MAX_BOOK_SIZE) {
+    const existing = library[book.id];
+    if (existing && !existing.deletedAt) {
+      // A hand edit here is newer than what the account holds.
+      if ((book.editedAt ?? 0) > existing.updatedAt) {
+        const cover = book.cover
+          ? await writeDriveBlob(`${book.fileName}.cover`, book.cover)
+          : null;
+        if (cover && existing.coverSlices) {
+          await deleteDriveFiles(existing.coverSlices);
+        }
+        library[book.id] = {
+          ...existing,
+          title: book.title,
+          creator: book.creator,
+          ...(cover
+            ? {
+                coverSlices: cover,
+                coverType: book.cover?.type || 'image/jpeg',
+              }
+            : {}),
+          updatedAt: book.editedAt ?? Date.now(),
+        };
+      }
+      continue;
+    }
+    if (existing?.deletedAt || !book.blob || book.blob.size > MAX_BOOK_SIZE) {
       continue;
     }
     const slices = await writeDriveBlob(book.fileName, book.blob);
@@ -277,7 +317,44 @@ export async function syncWithDrive(
     await writeDriveJson(STATE_FILE, complete);
   }
 
-  return { ...applied, uploaded, library, pushed };
+  return { ...applied, uploaded, removed, library, pushed };
+}
+
+/**
+ * Delete a book for good: its slices leave Drive and a tombstone takes their
+ * place, so the other devices drop their copies at the next sync.
+ */
+export async function deleteBookEverywhere(
+  bookKey: string,
+  entry: LibraryEntry | undefined,
+) {
+  await deleteBook(bookKey);
+  if (!entry) {
+    return;
+  }
+
+  const remote = (await readDriveJson<SyncSnapshot>(STATE_FILE)) ?? {
+    version: SNAPSHOT_VERSION,
+    books: {},
+  };
+  await deleteDriveFiles([...entry.slices, ...(entry.coverSlices ?? [])]);
+
+  const library = { ...(remote.library ?? {}) };
+  library[bookKey] = {
+    ...entry,
+    slices: [],
+    coverSlices: undefined,
+    deletedAt: Date.now(),
+    updatedAt: Date.now(),
+  };
+  const books = { ...(remote.books ?? {}) };
+  delete books[bookKey];
+  await writeDriveJson(STATE_FILE, {
+    ...remote,
+    version: SNAPSHOT_VERSION,
+    books,
+    library,
+  });
 }
 
 /**
