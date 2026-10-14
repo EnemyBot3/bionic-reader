@@ -74,8 +74,21 @@ export type SearchResult = {
   chapter: string;
 };
 
+/** Where a selection sits on screen, so a control can be put beside it. */
+export type SelectionAnchor = {
+  cfiRange: string;
+  text: string;
+  top: number;
+  bottom: number;
+  left: number;
+};
+
 export type EpubReaderHandle = {
   display: (target: string | number) => Promise<void>;
+  /** Paint a passage, or repaint it in another colour. */
+  markPassage: (cfiRange: string, colour: string) => void;
+  unmarkPassage: (cfiRange: string) => void;
+  clearSelection: () => void;
   previousChapter: () => Promise<void>;
   nextChapter: () => Promise<void>;
   goToProgress: (progress: number) => Promise<void>;
@@ -89,6 +102,9 @@ type Props = {
   settings: ReaderSettings;
   onReady: (details: BookDetails) => void;
   onLocationChange: (location: ReadingLocation) => void;
+  /** Passages to paint, re-applied whenever a section renders. */
+  highlights: Array<{ cfiRange: string; colour: string }>;
+  onSelect: (anchor: SelectionAnchor | null) => void;
   onLoadingChange: (loading: boolean) => void;
   onBlankChange: (blank: boolean) => void;
   onError: (message: string) => void;
@@ -544,6 +560,36 @@ function whenIdle(timeout: number) {
   });
 }
 
+/**
+ * EPUB.js draws a highlight as an overlay keyed by its range. Repainting the
+ * same range in a new colour means removing the old overlay first.
+ */
+function paintHighlight(
+  rendition: Rendition | null,
+  cfiRange: string,
+  colour: string,
+) {
+  if (!rendition) {
+    return;
+  }
+  try {
+    rendition.annotations.remove(cfiRange, 'highlight');
+  } catch {
+    // Nothing painted there yet.
+  }
+  try {
+    rendition.annotations.highlight(
+      cfiRange,
+      {},
+      undefined as unknown as (event: Event) => void,
+      'br-mark',
+      { fill: colour, 'fill-opacity': '0.32', 'mix-blend-mode': 'multiply' },
+    );
+  } catch {
+    // A range that no longer resolves, such as text an edit removed.
+  }
+}
+
 function nextAnimationFrame() {
   return new Promise<void>(resolve =>
     window.requestAnimationFrame(() => resolve()),
@@ -625,8 +671,10 @@ function EpubReaderComponent(
     file,
     initialCfi,
     settings,
+    highlights,
     onReady,
     onLocationChange,
+    onSelect,
     onLoadingChange,
     onBlankChange,
     onError,
@@ -652,18 +700,22 @@ function EpubReaderComponent(
   );
   const currentCfiRef = useRef(initialCfi ?? '');
   const suppressLocationRef = useRef(true);
+  const highlightsRef = useRef(highlights);
   const callbacksRef = useRef({
     onReady,
     onLocationChange,
+    onSelect,
     onLoadingChange,
     onBlankChange,
     onError,
   });
 
   settingsRef.current = settings;
+  highlightsRef.current = highlights;
   callbacksRef.current = {
     onReady,
     onLocationChange,
+    onSelect,
     onLoadingChange,
     onBlankChange,
     onError,
@@ -674,6 +726,21 @@ function EpubReaderComponent(
     () => ({
       async display(target) {
         await navigateRef.current(target);
+      },
+      markPassage(cfiRange, colour) {
+        paintHighlight(renditionRef.current, cfiRange, colour);
+      },
+      unmarkPassage(cfiRange) {
+        try {
+          renditionRef.current?.annotations.remove(cfiRange, 'highlight');
+        } catch {
+          // Already gone, which is the state the caller wanted.
+        }
+      },
+      clearSelection() {
+        for (const document of documentsRef.current) {
+          document.defaultView?.getSelection()?.removeAllRanges();
+        }
       },
       async previousChapter() {
         const book = bookRef.current;
@@ -772,6 +839,22 @@ function EpubReaderComponent(
   );
 
   const contentSettingsKey = documentSettingsKey(settings);
+  // A stable description of the marks, so the effect below runs when the set
+  // really changes rather than on every render.
+  const highlightKey = highlights
+    .map(mark => `${mark.cfiRange}:${mark.colour}`)
+    .join('|');
+
+  useEffect(() => {
+    const rendition = renditionRef.current;
+    if (!rendition) {
+      return;
+    }
+    // Sections already on screen were rendered before these arrived.
+    for (const mark of highlightsRef.current) {
+      paintHighlight(rendition, mark.cfiRange, mark.colour);
+    }
+  }, [highlightKey]);
 
   useLayoutEffect(() => {
     const rendition = renditionRef.current;
@@ -1040,6 +1123,38 @@ function EpubReaderComponent(
           // Re-measure now so the first sizing picks up the full page.
           (contents as unknown as { resizeCheck: () => void }).resizeCheck();
         }
+
+        // A section can be torn down and rebuilt at any time, so its marks
+        // are painted again each time it comes back.
+        for (const mark of highlightsRef.current) {
+          paintHighlight(rendition, mark.cfiRange, mark.colour);
+        }
+      });
+
+      rendition.on('selected', (cfiRange: string, contents: Contents) => {
+        const selection = contents.window.getSelection();
+        const text = selection?.toString().trim() ?? '';
+        if (!text) {
+          callbacksRef.current.onSelect(null);
+          return;
+        }
+
+        const frame = Array.from(
+          host.querySelectorAll<HTMLIFrameElement>('.epub-view iframe'),
+        ).find(candidate => candidate.contentDocument === contents.document);
+        const rect = selection?.getRangeAt(0).getBoundingClientRect();
+        if (!frame || !rect) {
+          return;
+        }
+
+        const frameRect = frame.getBoundingClientRect();
+        callbacksRef.current.onSelect({
+          cfiRange,
+          text,
+          top: frameRect.top + rect.top,
+          bottom: frameRect.top + rect.bottom,
+          left: frameRect.left + rect.left + rect.width / 2,
+        });
       });
 
       rendition.hooks.unloaded.register((view: { contents?: Contents }) => {
@@ -1579,6 +1694,9 @@ function EpubReaderComponent(
       suppressLocationRef.current = false;
       await rendition.reportLocation();
       viewportAnchorRef.current = captureViewportAnchor(host, rendition);
+      for (const mark of highlightsRef.current) {
+        paintHighlight(rendition, mark.cfiRange, mark.colour);
+      }
       callbacksRef.current.onLoadingChange(false);
 
       const bookKey = getBookKey(file);

@@ -96,6 +96,66 @@ describe('mergeSnapshots', () => {
     expect(merged.bookmarks?.value).toHaveLength(1);
   });
 
+  it('takes the newer set of highlights, whole', () => {
+    const mark = (id: string, note: string, at: number) => ({
+      value: [
+        {
+          id,
+          cfiRange: 'epubcfi(/6/4!/4,/1:0,/1:9)',
+          text: 'a line worth keeping',
+          note,
+          colour: 'yellow' as const,
+          chapter: 'One',
+          progress: 0.2,
+          createdAt: 1,
+        },
+      ],
+      updatedAt: at,
+    });
+    const local: SyncSnapshot = {
+      version: 2,
+      books: { book: { highlights: mark('a', 'here', 100) } },
+    };
+    const remote: SyncSnapshot = {
+      version: 2,
+      books: { book: { highlights: mark('a', 'on the phone', 400) } },
+    };
+
+    expect(
+      mergeSnapshots(local, remote).books.book.highlights?.value[0].note,
+    ).toBe('on the phone');
+  });
+
+  it('carries highlights from a device that has them to one that does not', () => {
+    const remote: SyncSnapshot = {
+      version: 2,
+      books: {
+        book: {
+          position: position('remote', 10),
+          highlights: {
+            value: [
+              {
+                id: 'b',
+                cfiRange: 'epubcfi(/6/8!/4,/1:0,/1:4)',
+                text: 'the second passage',
+                note: '',
+                colour: 'blue' as const,
+                chapter: 'Two',
+                progress: 0.4,
+                createdAt: 2,
+              },
+            ],
+            updatedAt: 50,
+          },
+        },
+      },
+    };
+
+    const merged = mergeSnapshots(empty, remote).books.book;
+    expect(merged.highlights?.value).toHaveLength(1);
+    expect(merged.highlights?.value[0].colour).toBe('blue');
+  });
+
   it('accepts a snapshot written before the library existed', () => {
     const remote = {
       version: 1,

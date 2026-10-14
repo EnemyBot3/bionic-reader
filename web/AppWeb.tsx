@@ -35,6 +35,7 @@ import {
   FilePlus2,
   FileText,
   FolderOpen,
+  Highlighter,
   Library,
   LoaderCircle,
   Maximize2,
@@ -56,6 +57,7 @@ import type {
   EpubReaderHandle,
   ReadingLocation,
   SearchResult,
+  SelectionAnchor,
   TocEntry,
 } from './EpubReader';
 import {
@@ -92,6 +94,7 @@ import {
   getBookmarks,
   getBookKey,
   getBookmarks as readBookmarks,
+  getHighlights as readHighlights,
   getSavedPosition,
   deleteBook,
   keepStoredDataPersistent,
@@ -101,7 +104,11 @@ import {
   saveBook,
   removeLocalCopy,
   saveBookmarks,
+  saveHighlights,
   updateBook,
+  HIGHLIGHT_COLOURS,
+  type HighlightColour,
+  type SavedHighlight,
   savePosition,
   storedBookToFile,
   type SavedBookmark,
@@ -119,7 +126,15 @@ type LibraryRow = {
   local: boolean;
   cover: Blob | null;
 };
-type ContentsTab = 'toc' | 'bookmarks';
+type ContentsTab = 'toc' | 'bookmarks' | 'notes';
+
+/** What each colour paints as on the page, and on the controls. */
+const HIGHLIGHT_FILL: Record<HighlightColour, string> = {
+  yellow: '#f2d16b',
+  green: '#8fd6a7',
+  blue: '#8ec5f0',
+  pink: '#f0a7c4',
+};
 
 const EpubReader = lazy(async () => {
   const module = await import('./EpubReader');
@@ -161,6 +176,8 @@ export function AppWeb() {
   const [drawer, setDrawer] = useState<DrawerName>(null);
   const [contentsTab, setContentsTab] = useState<ContentsTab>('toc');
   const [bookmarks, setBookmarks] = useState<SavedBookmark[]>([]);
+  const [highlights, setHighlights] = useState<SavedHighlight[]>([]);
+  const [selection, setSelection] = useState<SelectionAnchor | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [searching, setSearching] = useState(false);
@@ -188,6 +205,17 @@ export function AppWeb() {
   const driveConfigured = isDriveConfigured();
 
   const palette = READER_PALETTES[settings.theme];
+  // Rebuilt only when the marks change, so the reader is not asked to repaint
+  // on every keystroke elsewhere.
+  const readerHighlights = useMemo(
+    () =>
+      highlights.map(mark => ({
+        cfiRange: mark.cfiRange,
+        colour: HIGHLIGHT_FILL[mark.colour],
+      })),
+    [highlights],
+  );
+
   // The device's own books first, then whatever else the account holds.
   const libraryRows = useMemo<LibraryRow[]>(() => {
     const rows = books.map(book => ({
@@ -404,6 +432,8 @@ export function AppWeb() {
 
   useEffect(() => {
     setBookmarks(bookKey ? getBookmarks(bookKey) : []);
+    setHighlights(bookKey ? readHighlights(bookKey) : []);
+    setSelection(null);
   }, [bookKey]);
 
   useEffect(() => {
@@ -716,6 +746,72 @@ export function AppWeb() {
     void readerRef.current?.display(target);
   }
 
+  function commitHighlights(next: SavedHighlight[]) {
+    setHighlights(next);
+    saveHighlights(bookKey, next);
+    setLocalEdits(count => count + 1);
+  }
+
+  function addHighlight(colour: HighlightColour) {
+    if (!selection || !bookKey) {
+      return;
+    }
+    const existing = highlights.find(
+      mark => mark.cfiRange === selection.cfiRange,
+    );
+    const mark: SavedHighlight = existing
+      ? { ...existing, colour }
+      : {
+          id: `${Date.now()}-${selection.cfiRange}`,
+          cfiRange: selection.cfiRange,
+          text: selection.text,
+          note: '',
+          colour,
+          chapter: location.chapter || 'Saved passage',
+          progress: location.progress,
+          createdAt: Date.now(),
+        };
+
+    commitHighlights(
+      existing
+        ? highlights.map(item => (item.id === mark.id ? mark : item))
+        : [...highlights, mark],
+    );
+    readerRef.current?.markPassage(mark.cfiRange, HIGHLIGHT_FILL[colour]);
+    readerRef.current?.clearSelection();
+    setSelection(null);
+  }
+
+  function removeHighlight(id: string) {
+    const mark = highlights.find(item => item.id === id);
+    if (mark) {
+      readerRef.current?.unmarkPassage(mark.cfiRange);
+    }
+    commitHighlights(highlights.filter(item => item.id !== id));
+  }
+
+  function noteHighlight(id: string, note: string) {
+    commitHighlights(
+      highlights.map(item => (item.id === id ? { ...item, note } : item)),
+    );
+  }
+
+  /** Everything marked in this book, as Markdown on the clipboard. */
+  function copyHighlights() {
+    const lines = [...highlights]
+      .sort((first, second) => first.progress - second.progress)
+      .map(mark => {
+        const quote = `> ${mark.text.replace(/\s+/g, ' ').trim()}`;
+        const where = `— ${mark.chapter}, ${Math.round(mark.progress * 100)}%`;
+        return [quote, mark.note, where].filter(Boolean).join('\n\n');
+      });
+
+    const title = book?.title ?? 'Highlights';
+    void navigator.clipboard?.writeText(
+      [`# ${title}`, ...lines].join('\n\n') + '\n',
+    );
+  }
+
   function toggleBookmark() {
     if (!bookKey || !location.cfi) {
       return;
@@ -840,6 +936,14 @@ export function AppWeb() {
           drawer={drawer}
           contentsTab={contentsTab}
           bookmarks={bookmarks}
+          highlights={highlights}
+          readerHighlights={readerHighlights}
+          selection={selection}
+          onSelect={setSelection}
+          onHighlight={addHighlight}
+          onRemoveHighlight={removeHighlight}
+          onNoteHighlight={noteHighlight}
+          onCopyHighlights={copyHighlights}
           currentBookmark={Boolean(currentBookmark)}
           searchQuery={searchQuery}
           searchResults={searchResults}
@@ -948,6 +1052,14 @@ type ReaderChromeProps = {
   drawer: DrawerName;
   contentsTab: ContentsTab;
   bookmarks: SavedBookmark[];
+  highlights: SavedHighlight[];
+  readerHighlights: Array<{ cfiRange: string; colour: string }>;
+  selection: SelectionAnchor | null;
+  onSelect: (anchor: SelectionAnchor | null) => void;
+  onHighlight: (colour: HighlightColour) => void;
+  onRemoveHighlight: (id: string) => void;
+  onNoteHighlight: (id: string, note: string) => void;
+  onCopyHighlights: () => void;
   currentBookmark: boolean;
   searchQuery: string;
   searchResults: SearchResult[];
@@ -1118,6 +1230,8 @@ function ReaderChrome(props: ReaderChromeProps) {
             settings={props.settings}
             onReady={props.onBookReady}
             onLocationChange={props.onLocationChange}
+            highlights={props.readerHighlights}
+            onSelect={props.onSelect}
             onLoadingChange={props.onLoadingChange}
             onBlankChange={props.onBlankChange}
             onError={props.onError}
@@ -1148,6 +1262,20 @@ function ReaderChrome(props: ReaderChromeProps) {
             >
               Close book
             </button>
+          </div>
+        ) : null}
+
+        {props.selection ? (
+          <div className="mark-picker" style={pickerPosition(props.selection)}>
+            {HIGHLIGHT_COLOURS.map(colour => (
+              <button
+                key={colour}
+                type="button"
+                aria-label={`Highlight ${colour}`}
+                style={{ backgroundColor: HIGHLIGHT_FILL[colour] }}
+                onClick={() => props.onHighlight(colour)}
+              />
+            ))}
           </div>
         ) : null}
 
@@ -1248,6 +1376,10 @@ function ReaderChrome(props: ReaderChromeProps) {
           currentHref={props.location.href}
           activeTab={props.contentsTab}
           bookmarks={props.bookmarks}
+          highlights={props.highlights}
+          onRemoveHighlight={props.onRemoveHighlight}
+          onNoteHighlight={props.onNoteHighlight}
+          onCopyHighlights={props.onCopyHighlights}
           onTabChange={props.onContentsTabChange}
           onNavigate={props.onNavigate}
           onRemoveBookmark={props.onRemoveBookmark}
@@ -1429,23 +1561,53 @@ function LibraryView({
   );
 }
 
+/**
+ * Put the colours beside the selection, above it where there is room and
+ * below it otherwise, and never off the edge of the window.
+ */
+function pickerPosition(selection: SelectionAnchor) {
+  const margin = 12;
+  const height = 40;
+  const halfWidth = 76;
+  const above = selection.top - height - 10;
+  const below = selection.bottom + 10;
+  const top =
+    above > 64 ? above : Math.min(below, window.innerHeight - height - margin);
+
+  return {
+    top: `${Math.max(64, top)}px`,
+    left: `${Math.min(
+      Math.max(halfWidth + margin, selection.left),
+      window.innerWidth - halfWidth - margin,
+    )}px`,
+  };
+}
+
 function ContentsDrawer({
   book,
   currentHref,
   activeTab,
   bookmarks,
+  highlights,
   onTabChange,
   onNavigate,
   onRemoveBookmark,
+  onRemoveHighlight,
+  onNoteHighlight,
+  onCopyHighlights,
   onClose,
 }: {
   book: BookDetails | null;
   currentHref: string;
   activeTab: ContentsTab;
   bookmarks: SavedBookmark[];
+  highlights: SavedHighlight[];
   onTabChange: (tab: ContentsTab) => void;
   onNavigate: (target: string) => void;
   onRemoveBookmark: (id: string) => void;
+  onRemoveHighlight: (id: string) => void;
+  onNoteHighlight: (id: string, note: string) => void;
+  onCopyHighlights: () => void;
   onClose: () => void;
 }) {
   return (
@@ -1486,6 +1648,14 @@ function ContentsDrawer({
         >
           Bookmarks
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === 'notes'}
+          onClick={() => onTabChange('notes')}
+        >
+          Notes
+        </button>
       </div>
 
       <div className="drawer-scroll">
@@ -1505,6 +1675,21 @@ function ContentsDrawer({
             <EmptyPanel
               icon={<Library size={21} />}
               text="No table of contents"
+            />
+          )
+        ) : activeTab === 'notes' ? (
+          highlights.length ? (
+            <HighlightList
+              highlights={highlights}
+              onNavigate={onNavigate}
+              onRemove={onRemoveHighlight}
+              onNote={onNoteHighlight}
+              onCopy={onCopyHighlights}
+            />
+          ) : (
+            <EmptyPanel
+              icon={<Highlighter size={21} />}
+              text="Select text to highlight it"
             />
           )
         ) : bookmarks.length ? (
@@ -1534,6 +1719,111 @@ function ContentsDrawer({
         )}
       </div>
     </aside>
+  );
+}
+
+function HighlightList({
+  highlights,
+  onNavigate,
+  onRemove,
+  onNote,
+  onCopy,
+}: {
+  highlights: SavedHighlight[];
+  onNavigate: (target: string) => void;
+  onRemove: (id: string) => void;
+  onNote: (id: string, note: string) => void;
+  onCopy: () => void;
+}) {
+  const [editing, setEditing] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    if (!copied) {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  return (
+    <div className="mark-list">
+      <div className="mark-list-head">
+        <span>
+          {highlights.length} {highlights.length === 1 ? 'passage' : 'passages'}
+        </span>
+        <IconButton
+          label={copied ? 'Copied as Markdown' : 'Copy all as Markdown'}
+          onClick={() => {
+            onCopy();
+            setCopied(true);
+          }}
+        >
+          {copied ? <Check size={16} /> : <Copy size={16} />}
+        </IconButton>
+      </div>
+
+      {[...highlights]
+        .sort((first, second) => first.progress - second.progress)
+        .map(mark => (
+          <div className="mark-row" key={mark.id}>
+            <button
+              className="mark-quote"
+              type="button"
+              onClick={() => onNavigate(mark.cfiRange)}
+            >
+              <span
+                className="mark-dot"
+                style={{ backgroundColor: HIGHLIGHT_FILL[mark.colour] }}
+                aria-hidden="true"
+              />
+              <span>
+                <strong>{mark.text}</strong>
+                <small>
+                  {mark.chapter} · {Math.round(mark.progress * 100)}%
+                </small>
+              </span>
+            </button>
+
+            {editing === mark.id ? (
+              <textarea
+                className="mark-note"
+                autoFocus
+                aria-label="Note"
+                placeholder="Add a note"
+                defaultValue={mark.note}
+                onBlur={event => {
+                  onNote(mark.id, event.currentTarget.value.trim());
+                  setEditing(null);
+                }}
+              />
+            ) : mark.note ? (
+              <button
+                className="mark-note-text"
+                type="button"
+                onClick={() => setEditing(mark.id)}
+              >
+                {mark.note}
+              </button>
+            ) : null}
+
+            <div className="mark-actions">
+              <IconButton
+                label={mark.note ? 'Edit note' : 'Add a note'}
+                onClick={() => setEditing(mark.id)}
+              >
+                <FilePlus2 size={15} />
+              </IconButton>
+              <IconButton
+                label="Delete highlight"
+                onClick={() => onRemove(mark.id)}
+              >
+                <Trash2 size={15} />
+              </IconButton>
+            </div>
+          </div>
+        ))}
+    </div>
   );
 }
 

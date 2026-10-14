@@ -31,6 +31,7 @@ import {
   saveDownloadedBook,
   storedBookToFile,
   type SavedBookmark,
+  type SavedHighlight,
   type SavedPosition,
   type StoredBook,
 } from './storage';
@@ -46,6 +47,7 @@ type Timed<T> = { value: T; updatedAt: number };
 type BookState = {
   position?: Timed<SavedPosition>;
   bookmarks?: Timed<SavedBookmark[]>;
+  highlights?: Timed<SavedHighlight[]>;
 };
 
 /** A book held in Drive, as the slices it was uploaded in. */
@@ -88,6 +90,7 @@ export function collectSnapshot(): SyncSnapshot {
   for (const bookKey of listStoredBookKeys()) {
     const position = getStoredEntry<SavedPosition>('position', bookKey);
     const bookmarks = getStoredEntry<SavedBookmark[]>('bookmarks', bookKey);
+    const highlights = getStoredEntry<SavedHighlight[]>('highlights', bookKey);
     const state: BookState = {};
 
     if (position) {
@@ -103,7 +106,13 @@ export function collectSnapshot(): SyncSnapshot {
         updatedAt: getEntryUpdatedAt('bookmarks', bookKey),
       };
     }
-    if (state.position || state.bookmarks) {
+    if (highlights) {
+      state.highlights = {
+        value: highlights,
+        updatedAt: getEntryUpdatedAt('highlights', bookKey),
+      };
+    }
+    if (state.position || state.bookmarks || state.highlights) {
       books[bookKey] = state;
     }
   }
@@ -142,11 +151,15 @@ export function mergeSnapshots(
     const merged: BookState = {};
     const position = newer(mine.position, theirs.position);
     const bookmarks = newer(mine.bookmarks, theirs.bookmarks);
+    const highlights = newer(mine.highlights, theirs.highlights);
     if (position) {
       merged.position = position;
     }
     if (bookmarks) {
       merged.bookmarks = bookmarks;
+    }
+    if (highlights) {
+      merged.highlights = highlights;
     }
     books[bookKey] = merged;
   }
@@ -215,6 +228,18 @@ export function applySnapshot(local: SyncSnapshot, merged: SyncSnapshot) {
         bookKey,
         state.bookmarks.value,
         state.bookmarks.updatedAt,
+      );
+      changed = true;
+    }
+    if (
+      state.highlights &&
+      state.highlights.updatedAt > (mine?.highlights?.updatedAt ?? 0)
+    ) {
+      applyRemoteEntry(
+        'highlights',
+        bookKey,
+        state.highlights.value,
+        state.highlights.updatedAt,
       );
       changed = true;
     }

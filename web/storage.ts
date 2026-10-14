@@ -15,6 +15,23 @@ export type SavedBookmark = {
   createdAt: number;
 };
 
+/** A passage marked in a book, with an optional note attached to it. */
+export type SavedHighlight = {
+  id: string;
+  /** An EPUB CFI range covering the passage. */
+  cfiRange: string;
+  text: string;
+  note: string;
+  colour: HighlightColour;
+  chapter: string;
+  progress: number;
+  createdAt: number;
+};
+
+export const HIGHLIGHT_COLOURS = ['yellow', 'green', 'blue', 'pink'] as const;
+
+export type HighlightColour = (typeof HIGHLIGHT_COLOURS)[number];
+
 export type StoredBook = {
   /** The book key, so a book can be found again from its file or the manifest. */
   id: string;
@@ -43,7 +60,7 @@ export function getBookKey(file: File) {
   return `${file.name}:${file.size}`;
 }
 
-type StoredKind = 'position' | 'bookmarks';
+type StoredKind = 'position' | 'bookmarks' | 'highlights';
 
 function storageKey(kind: StoredKind, bookKey: string) {
   return `bionic-reader:${kind}:${bookKey}`;
@@ -80,7 +97,11 @@ export function listStoredBookKeys() {
   const keys = new Set<string>();
   for (let index = 0; index < window.localStorage.length; index += 1) {
     const key = window.localStorage.key(index);
-    for (const kind of ['position', 'bookmarks'] as StoredKind[]) {
+    for (const kind of [
+      'position',
+      'bookmarks',
+      'highlights',
+    ] as StoredKind[]) {
       const prefix = `bionic-reader:${kind}:`;
       if (key?.startsWith(prefix)) {
         keys.add(key.slice(prefix.length));
@@ -180,6 +201,28 @@ export function saveBookmarks(bookKey: string, bookmarks: SavedBookmark[]) {
     markUpdated(key);
   } catch {
     // Bookmarks remain available for the current session.
+  }
+}
+
+export function getHighlights(bookKey: string): SavedHighlight[] {
+  try {
+    const key = storageKey('highlights', bookKey);
+    const value =
+      window.localStorage.getItem(key) ??
+      adoptLegacyEntry('highlights', bookKey);
+    return value ? (JSON.parse(value) as SavedHighlight[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+export function saveHighlights(bookKey: string, highlights: SavedHighlight[]) {
+  try {
+    const key = storageKey('highlights', bookKey);
+    window.localStorage.setItem(key, JSON.stringify(highlights));
+    markUpdated(key);
+  } catch {
+    // Highlights remain available for the current session.
   }
 }
 
@@ -358,7 +401,7 @@ export async function deleteBook(bookKey: string) {
   }
 
   // The reading state goes with it, on every device at the next sync.
-  for (const kind of ['position', 'bookmarks'] as const) {
+  for (const kind of ['position', 'bookmarks', 'highlights'] as const) {
     try {
       window.localStorage.removeItem(`bionic-reader:${kind}:${bookKey}`);
     } catch {

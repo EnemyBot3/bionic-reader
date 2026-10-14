@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   getBookKey,
   getBookmarks,
+  getHighlights,
+  saveHighlights,
   getSavedPosition,
   getUpdatedAt,
   listStoredBookKeys,
@@ -71,6 +73,24 @@ describe('reading state', () => {
         'bionic-reader:position:golden.epub:2000:1699999999',
       ),
     ).toBeNull();
+  });
+
+  it('keeps highlights alongside the other state of a book', () => {
+    saveHighlights('book', [
+      {
+        id: 'a',
+        cfiRange: 'epubcfi(/6/4!/4,/1:0,/1:9)',
+        text: 'a line worth keeping',
+        note: 'why it matters',
+        colour: 'green',
+        chapter: 'One',
+        progress: 0.2,
+        createdAt: 5,
+      },
+    ]);
+
+    expect(getHighlights('book')[0].note).toBe('why it matters');
+    expect(listStoredBookKeys()).toContain('book');
   });
 
   it('returns nothing rather than throwing on damaged storage', () => {
