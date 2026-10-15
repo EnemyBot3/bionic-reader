@@ -52,6 +52,7 @@ import {
   Type as TypeIcon,
   X,
 } from 'lucide-react';
+import { holdUpdateWhileReading } from './appUpdate';
 import type {
   BookDetails,
   EpubReaderHandle,
@@ -434,6 +435,8 @@ export function AppWeb() {
     setBookmarks(bookKey ? getBookmarks(bookKey) : []);
     setHighlights(bookKey ? readHighlights(bookKey) : []);
     setSelection(null);
+    // A new build waits rather than interrupting someone mid-chapter.
+    holdUpdateWhileReading(Boolean(bookKey));
   }, [bookKey]);
 
   useEffect(() => {

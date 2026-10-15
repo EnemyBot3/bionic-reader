@@ -50,6 +50,14 @@ self.addEventListener('activate', event => {
   );
 });
 
+// The page asks the new worker to take over once a reload costs the reader
+// nothing. Without this it would wait for every tab to close.
+self.addEventListener('message', event => {
+  if (event.data && event.data.type === 'take-over') {
+    self.skipWaiting();
+  }
+});
+
 self.addEventListener('fetch', event => {
   const request = event.request;
   if (request.method !== 'GET') {
